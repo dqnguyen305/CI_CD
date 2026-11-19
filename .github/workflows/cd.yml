@@ -20,10 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Download application JAR from CI
+      - name: Check out deployment configuration
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Download Docker image from CI
         uses: actions/download-artifact@v4
         with:
-          name: application-jar
+          name: docker-image
           path: deploy-artifact
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -39,28 +44,29 @@ jobs:
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Copy JAR and restart application
+      - name: Copy Docker image and Compose file
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
         run: |
-          JAR_FILE="$(find deploy-artifact -maxdepth 1 -type f -name '*.jar' ! -name '*-plain.jar' -print -quit)"
-          test -n "$JAR_FILE"
-          scp -o BatchMode=yes "$JAR_FILE" "$VPS_USER@$VPS_HOST:/opt/webservice-session02/app.jar.new"
-          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" <<'REMOTE'
+          test -f deploy-artifact/docker-image.tar.gz
+          scp -o BatchMode=yes deploy-artifact/docker-image.tar.gz "$VPS_USER@$VPS_HOST:/tmp/webservice-session02-image.tar.gz"
+          scp -o BatchMode=yes compose.yml "$VPS_USER@$VPS_HOST:/opt/webservice-session02/compose.yml.new"
+          ssh -o BatchMode=yes "$VPS_USER@$VPS_HOST" "IMAGE_TAG='$IMAGE_TAG' bash -s" <<'REMOTE'
           set -eu
           cd /opt/webservice-session02
-          if [ -f app.jar ]; then
-            cp app.jar app.jar.previous
-          fi
-          mv app.jar.new app.jar
-          if sudo -n systemctl restart webservice-session02.service &&
-             sudo -n systemctl is-active --quiet webservice-session02.service; then
-            rm -f app.jar.previous
+          test -f .env
+          docker load -i /tmp/webservice-session02-image.tar.gz
+          mv compose.yml.new compose.yml
+          previous_tag="$(cat .image-tag 2>/dev/null || true)"
+          if IMAGE_TAG="$IMAGE_TAG" docker compose -f compose.yml up -d --wait --wait-timeout 120; then
+            printf '%s\n' "$IMAGE_TAG" > .image-tag.new
+            mv .image-tag.new .image-tag
+            rm -f /tmp/webservice-session02-image.tar.gz
           else
-            if [ -f app.jar.previous ]; then
-              mv app.jar.previous app.jar
-              sudo -n systemctl restart webservice-session02.service || true
+            if [ -n "$previous_tag" ]; then
+              IMAGE_TAG="$previous_tag" docker compose -f compose.yml up -d --wait --wait-timeout 120 || true
             fi
             exit 1
           fi

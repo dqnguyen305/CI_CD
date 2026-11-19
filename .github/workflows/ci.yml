@@ -44,11 +44,21 @@ jobs:
       - name: Run tests and build
         run: ./gradlew clean test bootJar
 
-      - name: Upload application JAR
+      - name: Build and export Docker image
+        run: |
+          mkdir -p docker-context
+          JAR_FILE="$(find build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*-plain.jar' -print -quit)"
+          test -n "$JAR_FILE"
+          cp "$JAR_FILE" docker-context/app.jar
+          cp Dockerfile docker-context/Dockerfile
+          docker build --tag "webservice-session02:${GITHUB_SHA}" docker-context
+          docker save "webservice-session02:${GITHUB_SHA}" | gzip -1 > docker-image.tar.gz
+
+      - name: Upload Docker image
         uses: actions/upload-artifact@v4
         with:
-          name: application-jar
-          path: build/libs/*.jar
+          name: docker-image
+          path: docker-image.tar.gz
           if-no-files-found: error
           retention-days: 7
 
